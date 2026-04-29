@@ -1,0 +1,2 @@
+"""Golden Boot prediction package."""
+
