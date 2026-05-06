@@ -64,8 +64,7 @@ def build_training_table() -> pd.DataFrame:
 
     # Aggregate by player
     players_agg = aggregate_player_rows(
-        players,
-        ["player", "player_key", "country_code", "position", "rank"]
+        players,["player", "player_key", "country_code", "position", "rank"]
     )
 
     #Syntetyczny zbior labels
@@ -211,9 +210,6 @@ def add_position_features(df: pd.DataFrame) -> pd.DataFrame:
     df["position_is_midfielder"] = position_text.str.contains(r"\bMF\b").astype(float)
     df["position_is_forward"] = position_text.str.contains(r"\b(?:FW|ST|CF|SS|LW|RW)\b").astype(float)
     return df
-
-
-
 
 
 

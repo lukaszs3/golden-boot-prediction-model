@@ -3,7 +3,6 @@ __pycache__/
 .DS_Store
 .idea
 # Kaggle data and trained artifacts can be regenerated.
-data/raw/
 data/processed/
 models/
 outputs/
