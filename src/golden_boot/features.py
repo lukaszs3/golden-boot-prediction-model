@@ -20,75 +20,6 @@ COUNTRY_FIXES = {
     "turkiye": "turkey",
 }
 
-def build_training_table() -> pd.DataFrame:
-    """
-    Build training table from current 2025/26 player data and rankings.
-    Uses active player performance stats as both features and synthetic target variable.
-    """
-    rankings = load_current_rankings()
-
-    # Load current 2025/26 player features
-    folder = dataset_dir("current_2025_2026")
-    path = folder / "players_data-2025_2026.csv"
-    if not path.exists():
-        path = folder / "players_data_light-2025_2026.csv"
-
-    df = pd.read_csv(path)
-
-    # Build base player data
-    players = pd.DataFrame(
-        {
-            "player": df["Player"],
-            "player_key": df["Player"].astype(str).str.lower().str.strip(),
-            "country_code": df["Nation"].astype(str).str[-3:].str.upper(),
-            "club_team": df["Squad"],
-            "league_name": df["Comp"],
-            "position": df["Pos"],
-            "age": df["Age"],
-            "club_minutes": df["Min"],
-            "club_goals": df["Gls"],
-            "club_non_penalty_goals": df["G-PK"],
-            "club_assists": df["Ast"],
-        }
-    )
-
-    # Filter to only include top-30 ranked countries
-    players = players.merge(rankings[["country_code", "rank"]], on="country_code", how="inner")
-
-    # Filter out goalkeepers
-    players = players[~players["position"].astype(str).str.upper().str.contains("GK", na=False)]
-
-    # Process player stats
-    players = finish_players(players)
-    players = add_competition_context_features(players)
-
-    # Aggregate by player
-    players_agg = aggregate_player_rows(
-        players,["player", "player_key", "country_code", "position", "rank"]
-    )
-
-    #Syntetyczny zbior labels
-    players_agg["target_goals"] = (
-        (players_agg["club_goals"] * players_agg["league_goals_rank_pct"]) / 10.0
-    ).round(0).astype(int)
-
-    # Add features
-    players_agg = add_position_features(players_agg)
-    players_agg["fifa_rank"] = players_agg["rank"]
-    players_agg["source_tournament"] = "2025-2026 Season"
-
-    # Select and return relevant columns (avoiding duplicates)
-    result_cols = [
-        "source_tournament",
-        "player",
-        "country_code",
-        "position",
-        "target_goals",
-        *FEATURE_COLUMNS,
-    ]
-
-    return players_agg[result_cols].reset_index(drop=True)
-
 
 def dataset_dir(dataset_key: str) -> Path:
     return RAW_DIR / KAGGLE_DATASETS[dataset_key]["folder"]
@@ -212,6 +143,236 @@ def add_position_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# =====================================================================
+# CLUB STATS LOADERS (for pre-tournament seasons)
+# =====================================================================
+
+def load_club_2017_features() -> pd.DataFrame:
+    """Load club stats for the 2017-18 season (used for 2018 WC training)."""
+    country_codes = load_fifa_snapshot("2100-01-01")[["country_key", "country_code"]]
+    frames: list[pd.DataFrame] = []
+
+    for path in sorted((dataset_dir("club_2017_2018") / "Football_Players").glob("2017*.json")):
+        raw = pd.read_json(path, lines=True)
+        general = pd.json_normalize(raw["general_stats"])
+        offensive = pd.json_normalize(raw["offensive_stats"])
+        frame = pd.DataFrame(
+            {
+                "player_key": raw["name"].astype(str).str.lower().str.strip(),
+                "country_key": raw["nationality"].astype(str).str.lower().str.strip().replace(
+                    COUNTRY_FIXES
+                ),
+                "club_team": raw["team"],
+                "league_name": path.stem,
+                "age": raw["age"],
+                "club_minutes": general["time"],
+                "club_goals": offensive["goals"],
+                "club_non_penalty_goals": offensive["npg"],
+                "club_assists": offensive["assists"],
+            }
+        )
+        frames.append(frame)
+
+    club = pd.concat(frames, ignore_index=True)
+    club = club.merge(country_codes, on="country_key", how="left")
+    club = finish_players(club)
+    club = add_competition_context_features(club)
+    club = aggregate_player_rows(club, ["player_key", "country_code"])
+    club["position"] = "FW"
+    return club
+
+
+def load_club_2021_features() -> pd.DataFrame:
+    """Load club stats for the 2021-22 season (used for 2022 WC training)."""
+    df = pd.read_csv(
+        dataset_dir("club_2021_2022") / "2021-2022 Football Player Stats.csv",
+        encoding="latin1",
+        sep=";",
+    )
+    club = pd.DataFrame(
+        {
+            "player_key": df["Player"].astype(str).str.lower().str.strip(),
+            "country_code": df["Nation"].astype(str).str[-3:].str.upper(),
+            "club_team": df["Squad"],
+            "league_name": df["Comp"],
+            "position": df["Pos"],
+            "age": df["Age"],
+            "club_minutes": df["Min"],
+            "club_goals": df["Goals"] * df["90s"],
+            "club_non_penalty_goals": (df["Goals"] - df["ShoPK"]) * df["90s"],
+            "club_assists": df["Assists"] * df["90s"],
+        }
+    )
+    club = finish_players(club)
+    club = add_competition_context_features(club)
+    club = aggregate_player_rows(club, ["player_key", "country_code"])
+    club["position"] = "FW"
+    return club
+
+
+# =====================================================================
+# TRAINING DATA: Real World Cup goals from 2018 and 2022
+# =====================================================================
+
+def build_2018_training_rows() -> pd.DataFrame:
+    """Build training rows from the 2018 World Cup with real goal labels."""
+    rankings = load_fifa_snapshot("2018-06-14").head(30)
+    squads = pd.read_csv(dataset_dir("world_cup_database") / "squads.csv")
+    players = pd.read_csv(dataset_dir("world_cup_database") / "players.csv")
+    goals = pd.read_csv(dataset_dir("world_cup_database") / "goals.csv")
+
+    rows = squads[squads["tournament_id"] == "WC-2018"].copy()
+    rows = rows[rows["team_code"].isin(rankings["country_code"])]
+    rows = rows[rows["position_code"].astype(str).str.upper() != "GK"]
+    rows["player"] = (rows["given_name"].fillna("") + " " + rows["family_name"].fillna("")).str.strip()
+    rows.loc[rows["player"] == "", "player"] = rows["family_name"].fillna("")
+    rows["player_key"] = rows["player"].astype(str).str.lower().str.strip()
+    rows["country_code"] = rows["team_code"]
+    rows["country"] = rows["team_name"]
+    rows["position"] = rows["position_code"]
+
+    # Count actual goals scored at the 2018 World Cup (excluding own goals)
+    goal_counts = (
+        goals[(goals["tournament_id"] == "WC-2018") & (goals["own_goal"] == 0)]
+        .groupby("player_id")
+        .size()
+        .rename("target_goals")
+        .reset_index()
+    )
+    rows = rows.merge(players[["player_id", "birth_date"]], on="player_id", how="left")
+    rows = rows.merge(goal_counts, on="player_id", how="left")
+
+    # Merge pre-tournament club stats from the 2017-18 season
+    rows = rows.merge(
+        load_club_2017_features()[[
+            "player_key",
+            "country_code",
+            "club_minutes",
+            "club_goals",
+            "club_non_penalty_goals",
+            "club_penalty_goals",
+            "club_assists",
+            "club_goals_per90",
+            "league_goals_rank_pct",
+            "league_non_penalty_goals_rank_pct",
+            "team_goal_share",
+        ]],
+        on=["player_key", "country_code"],
+        how="left",
+    )
+    rows["age"] = (
+        pd.Timestamp("2018-06-14") - pd.to_datetime(rows["birth_date"], errors="coerce")
+    ).dt.days / 365.25
+    rows["fifa_rank"] = rows["country_code"].map(rankings.set_index("country_code")["rank"])
+    rows["target_goals"] = rows["target_goals"].fillna(0.0)
+    rows[[
+        "club_minutes",
+        "club_goals",
+        "club_non_penalty_goals",
+        "club_penalty_goals",
+        "club_assists",
+        "club_goals_per90",
+        "league_goals_rank_pct",
+        "league_non_penalty_goals_rank_pct",
+        "team_goal_share",
+    ]] = rows[[
+        "club_minutes",
+        "club_goals",
+        "club_non_penalty_goals",
+        "club_penalty_goals",
+        "club_assists",
+        "club_goals_per90",
+        "league_goals_rank_pct",
+        "league_non_penalty_goals_rank_pct",
+        "team_goal_share",
+    ]].fillna(0.0)
+    rows["source_tournament"] = "2018 World Cup"
+    rows = add_position_features(rows)
+    return rows[
+        [
+            "source_tournament",
+            "player",
+            "country",
+            "country_code",
+            "position",
+            "target_goals",
+            *FEATURE_COLUMNS,
+        ]
+    ]
+
+
+def build_2022_training_rows() -> pd.DataFrame:
+    """Build training rows from the 2022 World Cup with real goal labels."""
+    rankings = load_fifa_snapshot("2022-11-20").head(30)
+    club = load_club_2021_features()[
+        [
+            "player_key",
+            "country_code",
+            "club_minutes",
+            "club_goals",
+            "club_non_penalty_goals",
+            "club_penalty_goals",
+            "club_assists",
+            "club_goals_per90",
+            "league_goals_rank_pct",
+            "league_non_penalty_goals_rank_pct",
+            "team_goal_share",
+        ]
+    ]
+    rows = pd.read_csv(dataset_dir("world_cup_2022") / "player_stats.csv")
+    rows["country_key"] = rows["team"].astype(str).str.lower().str.strip().replace(COUNTRY_FIXES)
+    rows = rows.merge(rankings[["country_key", "country_code", "rank"]], on="country_key", how="inner")
+    rows = rows[rows["position"].astype(str).str.upper() != "GK"]
+    rows["player_key"] = rows["player"].astype(str).str.lower().str.strip()
+    rows = rows.merge(club, on=["player_key", "country_code"], how="left")
+    rows["age"] = rows["age"].astype(str).str.split("-").str[0]
+    rows["fifa_rank"] = rows["rank"]
+    rows["country"] = rows["team"]
+    rows["target_goals"] = rows["goals"].fillna(0.0)
+    rows[[
+        "club_minutes",
+        "club_goals",
+        "club_non_penalty_goals",
+        "club_penalty_goals",
+        "club_assists",
+        "club_goals_per90",
+        "league_goals_rank_pct",
+        "league_non_penalty_goals_rank_pct",
+        "team_goal_share",
+    ]] = rows[[
+        "club_minutes",
+        "club_goals",
+        "club_non_penalty_goals",
+        "club_penalty_goals",
+        "club_assists",
+        "club_goals_per90",
+        "league_goals_rank_pct",
+        "league_non_penalty_goals_rank_pct",
+        "team_goal_share",
+    ]].fillna(0.0)
+    rows["source_tournament"] = "2022 World Cup"
+    rows = add_position_features(rows)
+    return rows[
+        [
+            "source_tournament",
+            "player",
+            "country",
+            "country_code",
+            "position",
+            "target_goals",
+            *FEATURE_COLUMNS,
+        ]
+    ]
+
+
+def build_training_table() -> pd.DataFrame:
+    """Combine 2018 and 2022 World Cup data into one training set."""
+    return pd.concat([build_2018_training_rows(), build_2022_training_rows()], ignore_index=True)
+
+
+# =====================================================================
+# 2026 INFERENCE CANDIDATES
+# =====================================================================
 
 def load_current_2026_features() -> pd.DataFrame:
     folder = dataset_dir("current_2025_2026")
@@ -238,11 +399,6 @@ def load_current_2026_features() -> pd.DataFrame:
     club = finish_players(club)
     club = add_competition_context_features(club)
     return aggregate_player_rows(club, ["player", "player_key", "country_code", "position"])
-
-
-
-
-
 
 
 def build_current_candidates(
