@@ -47,7 +47,7 @@ def transform_features(df: pd.DataFrame, scaler: dict) -> np.ndarray:
         else:
             values[col] = pd.to_numeric(values[col], errors="coerce")
             values[col] = values[col].fillna(float(scaler["medians"][col]))
-            values[col] = (values[col] - float(scaler["means"][col])) / float(scaler["stds"][col])
+            values[col] = (values[col] - float(scaler["means"][col])) / float(scaler["stds"][col]) #normal distribution
     return values[scaler["features"]].fillna(0.0).to_numpy(dtype=np.float32)
 
 
@@ -73,7 +73,7 @@ def train_model(
     
     # Stratify split based on target_goals to ensure similar distributions
     strat_keys = np.clip(training_df["target_goals"].fillna(0).to_numpy(), 0, 2)
-    for key in np.unique(strat_keys):
+    for key in np.unique(strat_keys): #(0,1,2)
         idx = np.where(strat_keys == key)[0]
         rng.shuffle(idx)
         v_size = max(1 if len(idx) > 1 else 0, int(0.2 * len(idx)))
@@ -82,6 +82,7 @@ def train_model(
         
     train_idx = np.array(train_idx_list)
     val_idx = np.array(val_idx_list)
+    #proportions match
     rng.shuffle(train_idx)
     rng.shuffle(val_idx)
 
@@ -113,7 +114,6 @@ def train_model(
     epochs_without_improvement = 0
 
     for epoch in range(epochs):
-        # --- Training Phase (full-batch for small dataset) ---
         model.train()
         optimizer.zero_grad()
         predictions = model(x_train_tensor)

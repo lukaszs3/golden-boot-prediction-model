@@ -24,7 +24,7 @@ COUNTRY_FIXES = {
 def dataset_dir(dataset_key: str) -> Path:
     return RAW_DIR / KAGGLE_DATASETS[dataset_key]["folder"]
 
-
+#Loads FIFA world rankings for a specific event date by retrieving the most recent ranking snapshot on or before that date.
 def load_fifa_snapshot(event_date: str) -> pd.DataFrame:
     files = sorted(dataset_dir("fifa_rankings").glob("fifa_ranking-*.csv"))
     rankings = pd.concat((pd.read_csv(path) for path in files), ignore_index=True)
@@ -95,7 +95,7 @@ def add_competition_context_features(df: pd.DataFrame) -> pd.DataFrame:
     df["team_goal_share"] = (df["club_goals"] / team_goals.replace(0, np.nan)).fillna(0.0)
     return df
 
-
+#For example mbappe was playing in 2 different clubs
 def aggregate_player_rows(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
     def weighted_average(frame: pd.DataFrame, column: str) -> float:
         values = pd.to_numeric(frame[column], errors="coerce")
@@ -143,9 +143,7 @@ def add_position_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# =====================================================================
-# CLUB STATS LOADERS (for pre-tournament seasons)
-# =====================================================================
+#Loading club stats for 2017 and 2021 seasons
 
 def load_club_2017_features() -> pd.DataFrame:
     """Load club stats for the 2017-18 season (used for 2018 WC training)."""
@@ -210,9 +208,7 @@ def load_club_2021_features() -> pd.DataFrame:
     return club
 
 
-# =====================================================================
-# TRAINING DATA: Real World Cup goals from 2018 and 2022
-# =====================================================================
+#Building data for 2018 and 2022 world cups from scratch.
 
 def build_2018_training_rows() -> pd.DataFrame:
     """Build training rows from the 2018 World Cup with real goal labels."""
@@ -364,15 +360,13 @@ def build_2022_training_rows() -> pd.DataFrame:
         ]
     ]
 
-
+#concat all input training data
 def build_training_table() -> pd.DataFrame:
     """Combine 2018 and 2022 World Cup data into one training set."""
-    return pd.concat([build_2018_training_rows(), build_2022_training_rows()], ignore_index=True)
-
-
-# =====================================================================
-# 2026 INFERENCE CANDIDATES
-# =====================================================================
+    df1, df2 = build_2018_training_rows(), build_2022_training_rows()
+    df = pd.concat([df1,df2], ignore_index=True)
+    return df
+#Inference for 2026 world cup (we are calling our model on these)
 
 def load_current_2026_features() -> pd.DataFrame:
     folder = dataset_dir("current_2025_2026")
