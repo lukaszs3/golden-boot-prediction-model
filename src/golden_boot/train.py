@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
 
 from .config import FEATURE_COLUMNS
 from .model import GoldenBootMLP
@@ -68,11 +67,22 @@ def train_model(
     model_path.parent.mkdir(parents=True, exist_ok=True)
     learning_curve_path.parent.mkdir(parents=True, exist_ok=True)
 
-    indices = np.arange(len(training_df))
-    np.random.default_rng(seed).shuffle(indices)
-    val_size = max(1, int(0.2 * len(indices)))
-    val_idx = indices[:val_size]
-    train_idx = indices[val_size:]
+    rng = np.random.default_rng(seed)
+    train_idx_list, val_idx_list = [], []
+    
+    # Stratify split based on target_goals to ensure similar distributions
+    strat_keys = np.clip(training_df["target_goals"].fillna(0).to_numpy(), 0, 2)
+    for key in np.unique(strat_keys):
+        idx = np.where(strat_keys == key)[0]
+        rng.shuffle(idx)
+        v_size = max(1 if len(idx) > 1 else 0, int(0.2 * len(idx)))
+        val_idx_list.extend(idx[:v_size])
+        train_idx_list.extend(idx[v_size:])
+        
+    train_idx = np.array(train_idx_list)
+    val_idx = np.array(val_idx_list)
+    rng.shuffle(train_idx)
+    rng.shuffle(val_idx)
 
     train_df = training_df.iloc[train_idx].reset_index(drop=True)
     val_df = training_df.iloc[val_idx].reset_index(drop=True)
@@ -87,15 +97,11 @@ def train_model(
     x_val_tensor = torch.from_numpy(x_val)
     y_val_tensor = torch.from_numpy(y_val)
 
-    train_dataset = TensorDataset(x_train_tensor, y_train_tensor)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=min(batch_size, len(train_dataset)),
-        shuffle=True,
-    )
-
     model = GoldenBootMLP(input_size=x_train.shape[1])
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs, eta_min=1e-6
+    )
     loss_fn = nn.MSELoss()
 
     history = {"train_loss": [], "val_loss": []}
@@ -106,15 +112,16 @@ def train_model(
     epochs_without_improvement = 0
 
     for epoch in range(epochs):
+        # --- Training Phase (full-batch for small dataset) ---
         model.train()
+        optimizer.zero_grad()
+        predictions = model(x_train_tensor)
+        loss = loss_fn(predictions, y_train_tensor)
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
 
-        for batch_x, batch_y in train_loader:
-            optimizer.zero_grad()
-            predictions = model(batch_x)
-            loss = loss_fn(predictions, batch_y)
-            loss.backward()
-            optimizer.step()
-
+        # --- Validation Phase ---
         model.eval()
         with torch.no_grad():
             train_predictions = model(x_train_tensor)
@@ -214,6 +221,14 @@ def plot_learning_curve(history: dict, output_path: Path) -> None:
     epochs = np.arange(1, len(history["train_loss"]) + 1)
     ax.plot(epochs, history["train_loss"], label="Training loss", linewidth=2.2)
     ax.plot(epochs, history["val_loss"], label="Validation loss", linewidth=2.2)
+
+    # Mark the best epoch
+    if "best_epoch" in history:
+        best_ep = history["best_epoch"]
+        best_val = history["best_val_loss"]
+        ax.axvline(best_ep, color="gray", linestyle="--", alpha=0.6, label=f"Best epoch ({best_ep})")
+        ax.scatter([best_ep], [best_val], color="orange", zorder=5, s=60)
+
     ax.set_title("MLP Regression Loss")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("MSE loss")

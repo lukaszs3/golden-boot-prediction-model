@@ -87,8 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Redownload Kaggle data even if files already exist.",
     )
-    parser.add_argument("--epochs", type=int, default=300)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
