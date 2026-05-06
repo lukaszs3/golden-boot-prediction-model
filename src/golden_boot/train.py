@@ -44,11 +44,12 @@ def transform_features(df: pd.DataFrame, scaler: dict) -> np.ndarray:
     values = df.copy()
     for col in scaler["features"]:
         if col not in values:
-            values[col] = np.nan
-        values[col] = pd.to_numeric(values[col], errors="coerce")
-        values[col] = values[col].fillna(float(scaler["medians"][col]))
-        values[col] = (values[col] - float(scaler["means"][col])) / float(scaler["stds"][col])
-    return values[scaler["features"]].to_numpy(dtype=np.float32)
+            values.loc[:, col] = np.nan
+        else:
+            values[col] = pd.to_numeric(values[col], errors="coerce")
+            values[col] = values[col].fillna(float(scaler["medians"][col]))
+            values[col] = (values[col] - float(scaler["means"][col])) / float(scaler["stds"][col])
+    return values[scaler["features"]].fillna(0.0).to_numpy(dtype=np.float32)
 
 
 def train_model(

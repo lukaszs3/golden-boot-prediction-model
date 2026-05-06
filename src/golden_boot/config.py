@@ -14,22 +14,6 @@ KAGGLE_DATASETS = {
         "handle": "cashncarry/fifaworldranking",
         "folder": "cashncarry__fifaworldranking",
     },
-    "world_cup_database": {
-        "handle": "joshfjelstul/world-cup-database",
-        "folder": "joshfjelstul__world-cup-database",
-    },
-    "world_cup_2022": {
-        "handle": "swaptr/fifa-world-cup-2022-player-data",
-        "folder": "swaptr__fifa-world-cup-2022-player-data",
-    },
-    "club_2017_2018": {
-        "handle": "diegobartoli/top5legauesplayers-statsandphys",
-        "folder": "diegobartoli__top5legauesplayers-statsandphys",
-    },
-    "club_2021_2022": {
-        "handle": "vivovinco/20212022-football-player-stats",
-        "folder": "vivovinco__20212022-football-player-stats",
-    },
     "current_2025_2026": {
         "handle": "hubertsidorowicz/football-players-stats-2025-2026",
         "folder": "hubertsidorowicz__football-players-stats-2025-2026",
@@ -38,6 +22,35 @@ KAGGLE_DATASETS = {
         "handle": "zkskhurram/fifa-and-football-complete-dataset-19302022",
         "folder": "zkskhurram__fifa-and-football-complete-dataset-19302022",
     },
+}
+
+# Only use these datasets for training
+TRAINING_DATASETS = ["fifa_rankings", "current_2025_2026", "current_rankings_2026"]
+
+# Only keep current candidates from these countries.
+ALLOWED_CANDIDATE_COUNTRIES = [
+    "Germany",
+    "Brazil",
+    "Portugal",
+    "France",
+    "England",
+    "Spain",
+    "Croatia",
+    "Argentina",
+    "Belgium",
+    "The Netherlands",
+]
+ALLOWED_CANDIDATE_COUNTRY_CODES = {
+    "GER",
+    "BRA",
+    "POR",
+    "FRA",
+    "ENG",
+    "ESP",
+    "CRO",
+    "ARG",
+    "BEL",
+    "NED",
 }
 
 
