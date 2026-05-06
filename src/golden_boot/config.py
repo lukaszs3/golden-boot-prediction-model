@@ -40,9 +40,6 @@ KAGGLE_DATASETS = {
     },
 }
 
-# Only use these datasets for training
-TRAINING_DATASETS = ["fifa_rankings", "current_2025_2026", "current_rankings_2026"]
-
 # Only keep current candidates from these countries.
 ALLOWED_CANDIDATE_COUNTRIES = [
     "Germany",
