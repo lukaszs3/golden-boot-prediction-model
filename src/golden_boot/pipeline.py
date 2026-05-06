@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .config import MODEL_DIR, OUTPUT_DIR, PROCESSED_DIR
 from .download_data import download_all
@@ -33,9 +34,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
     candidates_df.to_csv(candidates_path, index=False)
     print(f"  {len(candidates_df)} candidates -> {candidates_path}")
 
-    model_path = MODEL_DIR / "golden_boot_mlp.pt"
+    model_path = MODEL_DIR / "golden_boot_model.pt"
     learning_curve_path = OUTPUT_DIR / "learning_curve.png"
-    print("Training PyTorch MLP...")
+    print("Training MLP model...")
     history = train_model(
         training_df,
         model_path=model_path,
@@ -44,13 +45,20 @@ def run_pipeline(args: argparse.Namespace) -> None:
         lr=args.lr,
         batch_size=args.batch_size,
         seed=args.seed,
+        early_stopping_patience=args.early_stopping_patience,
     )
     print(
-        "  final loss:",
-        f"train={history['train_loss'][-1]:.4f}",
-        f"val={history['val_loss'][-1]:.4f}",
-        f"best_val={history['best_val_loss']:.4f}@epoch{history['best_epoch']}",
+        "  best checkpoint:",
+        f"train={history['best_train_loss']:.4f}",
+        f"val={history['best_val_loss']:.4f}",
+        f"epoch={history['best_epoch']}/{history['trained_epochs']}",
     )
+    if history["stopped_early"]:
+        print(
+            "  early stopping:",
+            f"stopped after {history['trained_epochs']} epochs",
+            f"(patience={history['early_stopping_patience']})",
+        )
     print(f"  model -> {model_path}")
     print(f"  learning curve -> {learning_curve_path}")
 
@@ -66,11 +74,13 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     print("\nTop candidates:")
     preview_cols = ["player", "country", "predicted_goals", "golden_boot_probability"]
-    print(predictions[preview_cols].head(args.top_n).to_string(index=False))
+    preview_text = predictions[preview_cols].head(args.top_n).to_string(index=False)
+    stdout_encoding = sys.stdout.encoding or "utf-8"
+    print(preview_text.encode(stdout_encoding, errors="replace").decode(stdout_encoding))
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train and run the Golden Boot MLP.")
+    parser = argparse.ArgumentParser(description="Train and run the Golden Boot model.")
     parser.add_argument("--download", action="store_true", help="Download missing Kaggle data.")
     parser.add_argument(
         "--force-download",
@@ -81,6 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=25,
+        help="Stop training when validation loss has not improved for this many epochs. Use 0 to disable.",
+    )
     parser.add_argument("--top-n", type=int, default=15)
     parser.add_argument(
         "--min-current-minutes",

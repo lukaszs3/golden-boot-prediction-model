@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import random
-from copy import deepcopy
 from pathlib import Path
 
 os.environ.setdefault(
@@ -28,13 +27,11 @@ def set_seed(seed: int) -> None:
 
 
 def fit_scaler(df: pd.DataFrame) -> dict:
-    """Fit a tiny standardizer with pandas/numpy."""
     values = df[FEATURE_COLUMNS].astype(float)
     medians = values.median().fillna(0.0)
     filled = values.fillna(medians)
     means = filled.mean()
     stds = filled.std(ddof=0).replace(0.0, 1.0).fillna(1.0)
-
     return {
         "features": list(FEATURE_COLUMNS),
         "medians": medians.to_dict(),
@@ -44,15 +41,14 @@ def fit_scaler(df: pd.DataFrame) -> dict:
 
 
 def transform_features(df: pd.DataFrame, scaler: dict) -> np.ndarray:
-    features = scaler["features"]
     values = df.copy()
-    for col in features:
+    for col in scaler["features"]:
         if col not in values:
             values[col] = np.nan
         values[col] = pd.to_numeric(values[col], errors="coerce")
         values[col] = values[col].fillna(float(scaler["medians"][col]))
         values[col] = (values[col] - float(scaler["means"][col])) / float(scaler["stds"][col])
-    return values[features].to_numpy(dtype=np.float32)
+    return values[scaler["features"]].to_numpy(dtype=np.float32)
 
 
 def train_model(
@@ -63,6 +59,7 @@ def train_model(
     lr: float = 1e-3,
     batch_size: int = 32,
     seed: int = 42,
+    early_stopping_patience: int = 25,
 ) -> dict:
     if len(training_df) < 10:
         raise ValueError("Training data is too small after filtering.")
@@ -81,61 +78,93 @@ def train_model(
     val_df = training_df.iloc[val_idx].reset_index(drop=True)
     scaler = fit_scaler(train_df)
 
-    x_train = torch.tensor(transform_features(train_df, scaler))
-    y_train = torch.tensor(train_df["target_goals"].to_numpy(dtype=np.float32))
-    x_val = torch.tensor(transform_features(val_df, scaler))
-    y_val = torch.tensor(val_df["target_goals"].to_numpy(dtype=np.float32))
+    x_train = transform_features(train_df, scaler)
+    y_train = train_df["target_goals"].to_numpy(dtype=np.float32)
+    x_val = transform_features(val_df, scaler)
+    y_val = val_df["target_goals"].to_numpy(dtype=np.float32)
+    x_train_tensor = torch.from_numpy(x_train)
+    y_train_tensor = torch.from_numpy(y_train)
+    x_val_tensor = torch.from_numpy(x_val)
+    y_val_tensor = torch.from_numpy(y_val)
 
+    train_dataset = TensorDataset(x_train_tensor, y_train_tensor)
     train_loader = DataLoader(
-        TensorDataset(x_train, y_train),
-        batch_size=batch_size,
+        train_dataset,
+        batch_size=min(batch_size, len(train_dataset)),
         shuffle=True,
     )
 
-    model = GoldenBootMLP(input_size=len(FEATURE_COLUMNS))
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn: nn.Module = nn.MSELoss()
+    model = GoldenBootMLP(input_size=x_train.shape[1])
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    loss_fn = nn.MSELoss()
+
     history = {"train_loss": [], "val_loss": []}
     best_val_loss = float("inf")
+    best_train_loss = float("inf")
     best_epoch = 0
-    best_state = deepcopy(model.state_dict())
+    best_state_dict = None
+    epochs_without_improvement = 0
 
     for epoch in range(epochs):
         model.train()
-        batch_losses = []
+
         for batch_x, batch_y in train_loader:
             optimizer.zero_grad()
-            preds = model(batch_x)
-            loss = loss_fn(preds, batch_y)
+            predictions = model(batch_x)
+            loss = loss_fn(predictions, batch_y)
             loss.backward()
             optimizer.step()
-            batch_losses.append(float(loss.item()))
 
         model.eval()
         with torch.no_grad():
-            val_preds = model(x_val)
-            val_loss = float(loss_fn(val_preds, y_val).item())
+            train_predictions = model(x_train_tensor)
+            val_predictions = model(x_val_tensor)
+            train_loss = float(loss_fn(train_predictions, y_train_tensor).item())
+            val_loss = float(loss_fn(val_predictions, y_val_tensor).item())
 
-        history["train_loss"].append(float(np.mean(batch_losses)))
+        history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
+
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_train_loss = train_loss
             best_epoch = epoch + 1
-            best_state = deepcopy(model.state_dict())
+            epochs_without_improvement = 0
+            best_state_dict = {
+                key: value.detach().cpu().clone()
+                for key, value in model.state_dict().items()
+            }
+        else:
+            epochs_without_improvement += 1
 
-    model.load_state_dict(best_state)
+        if early_stopping_patience > 0 and epochs_without_improvement >= early_stopping_patience:
+            break
+
+    if best_state_dict is None:
+        raise RuntimeError("MLP training did not produce a valid checkpoint.")
+
+    model.load_state_dict(best_state_dict)
+
     history["best_epoch"] = best_epoch
+    history["best_train_loss"] = best_train_loss
     history["best_val_loss"] = best_val_loss
+    history["trained_epochs"] = len(history["train_loss"])
+    history["stopped_early"] = len(history["train_loss"]) < epochs
+    history["early_stopping_patience"] = early_stopping_patience
+
     torch.save(
         {
+            "model_type": "mlp",
             "model_state_dict": model.state_dict(),
-            "input_size": len(FEATURE_COLUMNS),
+            "input_size": x_train.shape[1],
             "feature_columns": list(FEATURE_COLUMNS),
             "scaler": scaler,
             "epochs": epochs,
+            "trained_epochs": len(history["train_loss"]),
             "best_epoch": best_epoch,
+            "best_train_loss": best_train_loss,
             "best_val_loss": best_val_loss,
-            "lr": lr,
+            "early_stopping_patience": early_stopping_patience,
             "train_rows": len(train_df),
             "val_rows": len(val_df),
         },
@@ -147,13 +176,12 @@ def train_model(
 
 def load_model_predictions(candidates_df: pd.DataFrame, model_path: Path) -> pd.DataFrame:
     checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    x = transform_features(candidates_df, checkpoint["scaler"])
     model = GoldenBootMLP(input_size=int(checkpoint["input_size"]))
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
-
-    x = torch.tensor(transform_features(candidates_df, checkpoint["scaler"]))
     with torch.no_grad():
-        raw_predictions = model(x).numpy()
+        raw_predictions = model(torch.from_numpy(x)).numpy()
 
     predictions = candidates_df.copy()
     predictions["predicted_goals"] = np.maximum(raw_predictions, 0.0)
@@ -186,7 +214,7 @@ def plot_learning_curve(history: dict, output_path: Path) -> None:
     epochs = np.arange(1, len(history["train_loss"]) + 1)
     ax.plot(epochs, history["train_loss"], label="Training loss", linewidth=2.2)
     ax.plot(epochs, history["val_loss"], label="Validation loss", linewidth=2.2)
-    ax.set_title("MLP Learning Curve")
+    ax.set_title("MLP Regression Loss")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("MSE loss")
     ax.legend(frameon=False)
